@@ -2,8 +2,13 @@ import os
 import sys
 import hashlib
 import logging
+from typing import List
 from pathlib import Path
 from dotenv import load_dotenv
+from langchain_core.documents import Document
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_core.embeddings import Embeddings
 
 try:
     import pathspec  # For parsing .gitignore files
@@ -29,19 +34,18 @@ def load_environment():
         'IGNORE_DIRS': os.getenv('IGNORE_DIRS', '').split(',') if os.getenv('IGNORE_DIRS') else [],
         'SAVE_DIRECTORY': os.getenv('SAVE_DIRECTORY', 'training_data'),
         'SKIP_EMPTY_FILES': os.getenv('SKIP_EMPTY_FILES', 'TRUE').upper() == 'TRUE',
-        'IGNORE_GITIGNORE': os.getenv('IGNORE_GITIGNORE', 'FALSE').upper() == 'TRUE'
+        'IGNORE_GITIGNORE': os.getenv('IGNORE_GITIGNORE', 'FALSE').upper() == 'TRUE',
+        'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY')
     }
     return env_vars
 
 def should_ignore(path, ignore_files, ignore_dirs, git_path, gitignore_spec):
     """Check if the path should be ignored based on ignore lists and .gitignore spec."""
     relative_path = path.relative_to(git_path)
-    # Check if the file or directory is in the ignore lists
     if path.is_file() and path.name in ignore_files:
         return True
     if any(part in ignore_dirs for part in relative_path.parts):
         return True
-    # Check if the path matches any pattern in .gitignore
     if gitignore_spec and gitignore_spec.match_file(str(relative_path)):
         return True
     return False
@@ -51,7 +55,6 @@ def get_file_paths(git_path, ignore_files, ignore_dirs, gitignore_spec):
     files = []
     for root, dirs, filenames in os.walk(git_path):
         root_path = Path(root)
-        # Exclude directories that should be ignored
         dirs[:] = [d for d in dirs if not should_ignore(root_path / d, ignore_files, ignore_dirs, git_path, gitignore_spec)]
         for filename in filenames:
             file_path = root_path / filename
@@ -61,26 +64,99 @@ def get_file_paths(git_path, ignore_files, ignore_dirs, gitignore_spec):
             files.append(file_path)
     return files
 
-def write_txt(file_path, skip_empty_files, save_directory, git_path):
-    """Read the content of a file and write it to an individual text file with an MD5 hash."""
+def process_file(file_path, skip_empty_files, save_directory, git_path):
+    """Read the content of a file and create a Document with its content and metadata."""
     try:
         if skip_empty_files and file_path.stat().st_size == 0:
             logging.info(f"Skipping empty file: {file_path}")
-            return
+            return None
+
         with file_path.open('r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
-            md5_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
-            relative_path = file_path.relative_to(git_path)
-            save_path = save_directory / f"{relative_path.name}_{md5_hash}.txt"
-            save_path.write_text(content, encoding='utf-8')
-            logging.info(f"Written to: {save_path}")
+            
+        relative_path = file_path.relative_to(git_path)
+        md5_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+        
+        metadata = {
+            'source': str(file_path),
+            'relative_path': str(relative_path),
+            'file_name': file_path.name,
+            'file_type': file_path.suffix,
+            'md5_hash': md5_hash,
+            'file_size': file_path.stat().st_size
+        }
+
+        doc = Document(
+            page_content=content,
+            metadata=metadata
+        )
+
+        save_path = save_directory / f"{relative_path.name}_{md5_hash}.txt"
+        save_path.write_text(content, encoding='utf-8')
+        logging.info(f"Written to: {save_path}")
+
+        return doc
+
     except Exception as e:
         logging.error(f"Error processing file {file_path}: {e}")
+        return None
+
+def create_vector_store(documents: List[Document], embeddings: Embeddings, save_directory: Path) -> FAISS:
+    """Create a FAISS vector store from the documents."""
+    try:
+        vector_store = FAISS.from_documents(
+            documents=documents,
+            embedding=embeddings
+        )
+        
+        # Save the vector store
+        vector_store_path = save_directory / "vector_store"
+        vector_store_path.mkdir(exist_ok=True)
+        vector_store.save_local(str(vector_store_path), index_name="code_index")
+        logging.info(f"Vector store saved to {vector_store_path}")
+        
+        return vector_store
+    
+    except Exception as e:
+        logging.error(f"Error creating vector store: {e}")
+        raise
+
+def query_vector_store(vector_store: FAISS):
+    """Prompt the user for a query, perform similarity search, and display results."""
+    try:
+        query = input("Enter your query: ").strip()
+        if not query:
+            logging.info("No query entered. Exiting.")
+            return
+        
+        logging.info(f"Performing similarity search for query: '{query}'")
+        results = vector_store.similarity_search(query, k=5)
+        
+        if not results:
+            logging.info("No relevant documents found.")
+            return
+        
+        print("\nSearch Results:")
+        for idx, doc in enumerate(results, start=1):
+            print(f"\nResult {idx}:")
+            print(f"Content: {doc.page_content}")
+            print(f"Metadata: {doc.metadata}")
+        
+    except KeyboardInterrupt:
+        logging.info("\nQuery cancelled by user.")
+    except Exception as e:
+        logging.error(f"Error during querying: {e}")
 
 def main():
     """Main function to execute the script."""
     setup_logging()
     env = load_environment()
+    
+    # Check for OpenAI API key
+    if not env['OPENAI_API_KEY']:
+        logging.error("OPENAI_API_KEY is not set in the .env file.")
+        sys.exit(1)
+    
     git_project_directory = env['GIT_PROJECT_DIRECTORY']
     ignore_files = env['IGNORE_FILES']
     ignore_dirs = env['IGNORE_DIRS']
@@ -100,6 +176,10 @@ def main():
     if not save_directory.exists():
         save_directory.mkdir(parents=True, exist_ok=True)
         logging.info(f"Created SAVE_DIRECTORY at {save_directory}")
+
+    # Initialize embeddings
+    embeddings = OpenAIEmbeddings()
+    logging.info("Initialized OpenAI embeddings")
 
     # Read .gitignore file in git_path
     gitignore_spec = None
@@ -121,11 +201,23 @@ def main():
         sys.exit(1)
     logging.info(f"Found {len(files)} files to process.")
 
+    documents = []
     for file_path in files:
         logging.info(f"Processing file: {file_path}")
-        write_txt(file_path, skip_empty_files, save_directory, git_path)
+        doc = process_file(file_path, skip_empty_files, save_directory, git_path)
+        if doc:
+            documents.append(doc)
 
-    logging.info(f"Training data can be found in '{save_directory}' directory.")
+    logging.info(f"Created {len(documents)} documents.")
+    
+    # Create and save vector store
+    vector_store = create_vector_store(documents, embeddings, save_directory)
+    logging.info(f"Vector store created with {len(documents)} documents")
+    
+    # Set up retriever for user queries
+    query_vector_store(vector_store)
+
+    logging.info("Script execution completed.")
 
 if __name__ == '__main__':
     main()
