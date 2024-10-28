@@ -2,15 +2,16 @@ import os
 import sys
 import hashlib
 import logging
+import json
 from typing import List
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain_core.embeddings import Embeddings
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+import tiktoken
 
 try:
     import pathspec  # For parsing .gitignore files
@@ -203,6 +204,155 @@ def query_vector_store(vector_store: FAISS, openai_api_key: str):
     except Exception as e:
         logging.error(f"Error during querying: {e}")
 
+def count_tokens(file_contents):
+    encoder = tiktoken.encoding_for_model("gpt-4")
+    total_tokens = 0
+    file_tokens = {}
+
+    for file_path, content in file_contents.items():
+        tokens = len(encoder.encode(content))
+        total_tokens += tokens
+        file_tokens[file_path] = tokens
+
+    return total_tokens, file_tokens
+
+def split_contents(file_contents, max_tokens, prompt_tokens):
+    batches = []
+    current_batch = {}
+    current_tokens = 0
+
+    encoder = tiktoken.encoding_for_model("gpt-4")
+
+    for file_path, content in file_contents.items():
+        tokens = len(encoder.encode(f"-- File: {file_path} --\n\n{content}\n\n"))
+        if current_tokens + tokens > (max_tokens - prompt_tokens):
+            batches.append(current_batch)
+            current_batch = {}
+            current_tokens = 0
+
+        current_batch[file_path] = content
+        current_tokens += tokens
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
+
+def filter_documents_with_llm(query: str, documents: List[Document], openai_api_key: str) -> List[Document]:
+    """
+    Use the LLM to assess the relevance of documents to the query and filter them based on relevance scores.
+    """
+    logging.info("Filtering documents using LLM...")
+
+    # Prepare the file contents mapping
+    file_contents = {}
+    for doc in documents:
+        file_path = doc.metadata.get('relative_path', doc.metadata.get('source', 'unknown'))
+        file_contents[file_path] = doc.page_content
+
+    # Count tokens
+    total_tokens, file_tokens = count_tokens(file_contents)
+
+    # Define model and get max tokens
+    model_name = "gpt-4o-mini"
+    MODELS = {
+        "gpt-4o-mini": {"input_price": 0.150, "output_price": 0.600, "max_tokens": 128000},
+        "gpt-4o": {"input_price": 5.00, "output_price": 15.00, "max_tokens": 128000},
+        # Add other models if needed
+    }
+    max_tokens = MODELS[model_name]["max_tokens"]
+    PROMPT_TOKENS = 1000
+    RELEVANCE_THRESHOLD = 50
+
+    # Split contents into batches
+    batches = split_contents(file_contents, max_tokens, PROMPT_TOKENS)
+
+    # For each batch, send to the model
+    all_relevance_scores = {}
+
+    for batch_num, batch in enumerate(batches):
+        logging.info(f"Processing batch {batch_num+1}/{len(batches)}")
+
+        # Prepare the rendered files
+        rendered = ""
+        for file_path, content in batch.items():
+            rendered += f"-- File: {file_path} --\n\n{content}\n\n"
+
+        # Construct the prompt
+        prompt = f"""
+        Given the following query: "{query}"
+
+        Please analyze the relevance of each file to this query. Consider both direct and indirect relevance.
+        For indirect relevance, consider whether a file is necessary to understand how another relevant file works.
+
+        Then, provide a map from each file path to an integer from 0 to 100 representing its relevance to the query.
+        100 is most relevant, 0 is not at all relevant.
+        Start from listing files that appear to be the MOST relevant, and then make your way to those that are the least relevant. If a file has zero relevance, do not include it in the final output, in order to save space.
+
+        Produce your output in this exact format and **only** in this format:
+
+        {{
+            "relevance_scores": {{
+                "<filename>": <integer score from 0 to 100>,
+                ...(for all non-zero relevance files)
+            }}
+        }}
+
+        Here are the files and their contents (paths are relative to the repository root):
+
+        {rendered}
+        """
+
+        # Send the prompt to the model using langchain's ChatOpenAI
+        llm = ChatOpenAI(
+            openai_api_key=openai_api_key,
+            model=model_name,
+            temperature=0
+        )
+
+        try:
+            # Replace deprecated method with 'invoke' and extract content
+            response = llm.invoke(prompt)
+            response_content = response.content  # Extract string content from AIMessage
+
+            # Remove code block markers if present
+            if response_content.startswith("```json"):
+                response_content = response_content[len("```json"):].strip()
+                if response_content.endswith("```"):
+                    response_content = response_content[:-3].strip()
+
+            # Parse the response
+            response_json = json.loads(response_content)
+            relevance_scores = response_json.get('relevance_scores', {})
+            all_relevance_scores.update(relevance_scores)
+
+        except json.JSONDecodeError as e:
+            logging.error(f"JSON decoding failed for batch {batch_num+1}: {e}")
+            logging.error(f"Received response: {response_content if 'response_content' in locals() else response}")
+            continue
+        except Exception as e:
+            logging.error(f"Error processing batch {batch_num+1}: {e}")
+            continue
+
+    # Now we have all_relevance_scores, a mapping of file paths to relevance scores
+
+    # Filter the documents based on relevance scores
+    filtered_documents = []
+    for doc in documents:
+        file_path = doc.metadata.get('relative_path', doc.metadata.get('source', 'unknown'))
+        score = all_relevance_scores.get(file_path, 0)
+        if isinstance(score, str):
+            try:
+                score = int(score)
+            except ValueError:
+                score = 0
+        if score >= RELEVANCE_THRESHOLD:
+            # Add the document to filtered_documents
+            filtered_documents.append(doc)
+
+    logging.info(f"Number of documents after filtering: {len(filtered_documents)}")
+    return filtered_documents
+
 def main():
     """Main function to execute the script."""
     setup_logging()
@@ -266,6 +416,30 @@ def main():
 
     logging.info(f"Created {len(documents)} documents.")
     
+    # Count tokens in documents
+    encoder = tiktoken.encoding_for_model("gpt-4")
+    total_tokens = sum(len(encoder.encode(doc.page_content)) for doc in documents)
+    logging.info(f"Total tokens in documents: {total_tokens}")
+
+    TOKEN_THRESHOLD = 20000  # Set your desired threshold
+
+    if total_tokens > TOKEN_THRESHOLD:
+        logging.info(f"Total tokens exceed threshold ({TOKEN_THRESHOLD}), using LLM to filter documents.")
+        # Prompt user for query
+        query = input("Enter your query to filter documents: ").strip()
+        if not query:
+            logging.error("No query entered. Exiting.")
+            sys.exit(1)
+        # Filter documents using LLM
+        documents = filter_documents_with_llm(query, documents, env['OPENAI_API_KEY'])
+    else:
+        logging.info(f"Total tokens within threshold, proceeding with all documents.")
+
+    # Check if any documents remain after filtering
+    if not documents:
+        logging.error("No documents available after filtering. Exiting.")
+        sys.exit(1)
+
     # Create and save vector store
     vector_store = create_vector_store(documents, embeddings, save_directory)
     logging.info(f"Vector store created with {len(documents)} documents")
