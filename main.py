@@ -9,6 +9,8 @@ from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.embeddings import Embeddings
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
 
 try:
     import pathspec  # For parsing .gitignore files
@@ -121,8 +123,62 @@ def create_vector_store(documents: List[Document], embeddings: Embeddings, save_
         logging.error(f"Error creating vector store: {e}")
         raise
 
-def query_vector_store(vector_store: FAISS):
-    """Prompt the user for a query, perform similarity search, and display results."""
+def generate_answer(query: str, retrieved_docs: List[Document], openai_api_key: str) -> str:
+    """
+    Generate an answer using OpenAI's chat model based on the retrieved documents.
+
+    Args:
+        query (str): The user's query.
+        retrieved_docs (List[Document]): The documents retrieved from the vector store.
+        openai_api_key (str): OpenAI API key.
+
+    Returns:
+        str: The generated answer.
+    """
+    try:
+        # Initialize the chat model
+        llm = ChatOpenAI(
+            openai_api_key=openai_api_key,
+            model="gpt-4o",
+            temperature=0.2
+        )
+
+        # Create a chat prompt template using ChatPromptTemplate
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are a helpful assistant. Use the following pieces of context to answer the question at the end. Always provide a detailed code snippet along with your answer to help improve the user's code. Ensure the code snippet is relevant to the context and addresses the user's question directly. If you don't know the answer, just say that you don't know. Do not make up an answer."
+                ),
+                (
+                    "human",
+                    "Context:\n{context}\n\nQuestion: {question}\n\nPlease provide a detailed code snippet that addresses the question and improves the code."
+                ),
+            ]
+        )
+
+        # Create the chain by piping the prompt and the LLM
+        chain = prompt | llm
+
+        # Combine the content of retrieved documents as context
+        context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+
+        # Generate the answer by invoking the chain
+        answer = chain.invoke(
+            {
+                "context": context,
+                "question": query,
+            }
+        )
+
+        return answer
+
+    except Exception as e:
+        logging.error(f"Error generating answer: {e}")
+        return "Sorry, I couldn't generate an answer at this time."
+
+def query_vector_store(vector_store: FAISS, openai_api_key: str):
+    """Prompt the user for a query, perform similarity search, and display results using OpenAI's chat model."""
     try:
         query = input("Enter your query: ").strip()
         if not query:
@@ -136,11 +192,11 @@ def query_vector_store(vector_store: FAISS):
             logging.info("No relevant documents found.")
             return
         
-        print("\nSearch Results:")
-        for idx, doc in enumerate(results, start=1):
-            print(f"\nResult {idx}:")
-            print(f"Content: {doc.page_content}")
-            print(f"Metadata: {doc.metadata}")
+        logging.info("Generating answer using OpenAI's chat model...")
+        answer = generate_answer(query, results, openai_api_key)
+        
+        print("\nAnswer:")
+        print(answer)
         
     except KeyboardInterrupt:
         logging.info("\nQuery cancelled by user.")
@@ -215,7 +271,7 @@ def main():
     logging.info(f"Vector store created with {len(documents)} documents")
     
     # Set up retriever for user queries
-    query_vector_store(vector_store)
+    query_vector_store(vector_store, env['OPENAI_API_KEY'])
 
     logging.info("Script execution completed.")
 
