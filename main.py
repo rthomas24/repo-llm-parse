@@ -178,12 +178,11 @@ def generate_answer(query: str, retrieved_docs: List[Document], openai_api_key: 
         logging.error(f"Error generating answer: {e}")
         return "Sorry, I couldn't generate an answer at this time."
 
-def query_vector_store(vector_store: FAISS, openai_api_key: str):
-    """Prompt the user for a query, perform similarity search, and display results using OpenAI's chat model."""
+def query_vector_store(vector_store: FAISS, openai_api_key: str, query: str):
+    """Perform similarity search and display results using OpenAI's chat model."""
     try:
-        query = input("Enter your query: ").strip()
         if not query:
-            logging.info("No query entered. Exiting.")
+            logging.info("No query provided. Exiting.")
             return
         
         logging.info(f"Performing similarity search for query: '{query}'")
@@ -434,6 +433,11 @@ def main():
         documents = filter_documents_with_llm(query, documents, env['OPENAI_API_KEY'])
     else:
         logging.info(f"Total tokens within threshold, proceeding with all documents.")
+        # Prompt user for query for similarity search
+        query = input("Enter your query: ").strip()
+        if not query:
+            logging.error("No query entered. Exiting.")
+            sys.exit(1)
 
     # Check if any documents remain after filtering
     if not documents:
@@ -444,8 +448,8 @@ def main():
     vector_store = create_vector_store(documents, embeddings, save_directory)
     logging.info(f"Vector store created with {len(documents)} documents")
     
-    # Set up retriever for user queries
-    query_vector_store(vector_store, env['OPENAI_API_KEY'])
+    # Set up retriever for user queries using the same query
+    query_vector_store(vector_store, env['OPENAI_API_KEY'], query)
 
     logging.info("Script execution completed.")
 
