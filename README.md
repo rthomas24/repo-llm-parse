@@ -1,82 +1,79 @@
 # repo-llm-parse
 
+## Early Development Notice
+
+`repo-llm-parse` is currently in early development. The end goal is to provide support for both local and remote Git repositories using JavaScript and Python. The aim is to make it very easy to interact with a language model (LLM) with your repository's context always attached, enabling it to answer questions and provide better code insights.
+
 ## Overview
 
-`repo-llm-parse` scans a given Git project directory, processes files while respecting `.gitignore` rules, and creates a vector store of the project’s content. It leverages OpenAI embeddings for semantic search and allows querying relevant files using natural language prompts. This makes it ideal for developers looking to extract insights from large codebases.
+`repo-llm-parse` enables developers to parse Git repositories, process code files, respect `.gitignore` rules, and create embeddings using OpenAI embeddings. It supports local (Python) and remote GitHub repositories (JavaScript) for seamless integration with OpenAI’s models. This tool is ideal for querying large codebases, retrieving code snippets, and generating code insights.
 
 ## Key Features
 
-- **Parse Git Repositories**: Automatically reads and respects `.gitignore` rules.
-- **OpenAI Integration**: Embeds code content using OpenAI embeddings for semantic similarity.
-- **Search & Retrieve**: Quickly search through code with natural language queries.
-- **Vector Storage**: Stores document embeddings using FAISS for fast querying.
+- **Parse Local & Remote Repositories**: Supports parsing of local repositories (Python) and remote GitHub repositories (JavaScript).
+- **.gitignore Compliance**: Automatically respects `.gitignore` rules.
+- **OpenAI Integration**: Embeds code and generates answers using OpenAI’s chat models.
+- **Natural Language Query**: Query codebases to retrieve relevant snippets.
+- **Efficient Storage**: Stores embeddings with FAISS for fast querying (Python).
+- **Token Management**: Filters large documents to stay within token limits.
+
+## Components
+
+### Python
+Processes a local Git repo, creates code embeddings, and allows natural language querying.
+
+### JavaScript
+Fetches a GitHub repo’s contents, respects ignore patterns, and outputs as JSON for further processing.
 
 ## Setup and Installation
 
-Follow these steps to set up the repository:
+### Prerequisites
+- **Python** 3.7+, **Node.js** 20+, OpenAI API key, GitHub token (optional for private repos).
 
-1. **Clone the Repository**:
+### Installation
+1. Clone the repository:
+   ```bash
+   git clone <repo-url>
+   cd repo-llm-parse
+   ```
 
-    ```sh
-    git clone <repo-url>
-    cd repo-llm-parse
-    ```
+2. Set up Python:
+   ```bash
+   pip install -r python/requirements.txt
+   cp python/.env.sample python/.env
+   ```
 
-2. **Install Dependencies**:
-    Ensure you have Python installed. Run:
+3. Set up JavaScript:
+   ```bash
+   cd javascript
+   npm install
+   cp .env.sample .env
+   ```
 
-    ```sh
-    pip install -r requirements.txt
-    ```
+## Usage
 
-3. **Configure Environment Variables**:
-    - Copy `.env.sample` to `.env`:
+### Python Script
 
-    ```sh
-    cp .env.sample .env
-    ```
+1. Navigate to python directory:
+   ```bash
+   cd python
+   ```
 
-    - Edit `.env` and fill in the following values:
-        - `OPENAI_API_KEY`: Your OpenAI API key.
-        - `GIT_PROJECT_DIRECTORY`: Path to the Git project.
-        - `IGNORE_FILES` and `IGNORE_DIRS`: Files and directories to skip.
-        - `SAVE_DIRECTORY`: Directory for storing parsed data.
+2. Run the script and enter query when prompted:
+   ```bash
+   python main.py
+   ```
 
-## How to Run
+### JavaScript Script
 
-1. **Navigate to the project directory**:
-
-    ```sh
-    cd repo-llm-parse
-    ```
-
-2. **Run the script**:
-
-    ```sh
-    python main.py
-    ```
-
-3. **Provide your query when prompted**:
-    - Example:
-
-    ```sh
-    Enter your query: Explain how the authentication logic works
-    ```
-
-    - The script will retrieve relevant files and generate a detailed response using the OpenAI API.
-
-## Getting the Most Out of It
-
-- **Fine-tune your `.env` settings**: Exclude unnecessary files or directories to speed up processing.
-- **Use meaningful queries**: Ask detailed questions for better results.
-- **Leverage the vector store**: If the project is large, the vector store allows for faster querying of relevant files.
+1. Set githubUrl in fetchRepoFiles.js.
+2. Run the script:
+   ```bash
+   node fetchRepoFiles.js > output.json
+   ```
 
 ## Troubleshooting
 
-- **Missing API Key Error**: Ensure your `.env` file has a valid `OPENAI_API_KEY`.
-- **Empty Query Error**: Provide a valid query to search the vector store.
-- **Dependency Issues**: Install missing dependencies using:
-
-    ```sh
-    pip install -r requirements.txt
-    ```
+- Ensure API keys are valid.
+- For rate limits, use a GitHub token.
+- Install missing dependencies as needed.

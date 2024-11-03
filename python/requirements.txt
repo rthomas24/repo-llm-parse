@@ -1,0 +1,6 @@
+pathspec
+python-dotenv
+langchain
+tiktoken
+openai
+faiss-cpu
